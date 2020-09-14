@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 
+# clear debug trap
+trap "" DEBUG
+
+
 # ---- USER argument and parameter handling -----------------
 
 # User input (file name optional)
@@ -170,6 +174,9 @@ fi
 
 
 
+# reset DEBUG trap
+function setWhite { printf "\033[0m" }
+trap setWhite DEBUG
 
 
 # close out
@@ -183,4 +190,4 @@ unset baseName
 unset dosDir
 unset SPECIES
 unset NUMBERS
-cd ..
+cd -
