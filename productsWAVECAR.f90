@@ -1,43 +1,16 @@
 ! -------1---------2---------3---------4---------5---------6---------7 !
 ! -------------------------------------------------------------------- !
 ! Hello!
-! This bastardized script originated from 'wavetransSpinor.f90' code.
-! It basically serves to write out one wavefunction in real-space,
-! that is specified to by you!
+! This bastardized script also originated from 'wavetransSpinor.f90'
+! code. It computes Bloch Wave overlaps using a real-space integration.
+! You can specify the central Bloch Wave using -k and -b flags.
+! Further you can choose the range of bands/kpoints you evaluate -B -K.
+! (This is important, since these integrals can get expensive...)
 !
-! For example, (after you've compiled 'parseWAVECAR.exe'):
-!    ./parseWAVECAR -f WAVECAR -k 80 -b 45
+! For example, (after you've compiled 'productsWAVECAR.exe'):
+!    ./parseWAVECAR -f WAVECAR -k 80 -b 45 -K 70-80 -B 40-60
 !
-! (Defaults are -f WAVECAR -k 1 -b 1)
-! This would read the WAVECAR file within the directory, then output
-! the file WAVECAR_k80_b45.dat, with data preceding a 25-line header.
-!
-! (So for raw data, try 'tail -n +25 WAVECAR_k80_b45.dat' )
-!
-!
-! OTHER FLAGS:
-!
-! -q ::: quiet; so no warnings or time indicators to outstream.
-!
-!
-! -c ::: cartesian; writes coordinates for a wavefunction in cartesian
-!                   coordinates. The default behavior (without the
-!                   flag) is to write them in direct units.
-!
-! -s ::: sampling; looks for a file RPOINTS.
-!                  If found (and with appropriate format), then the
-!                  wavefunction will be evaluated at the points chosen
-!                  in RPOINTS. Otherwise there is a default way I set
-!                  the real-space sampling, and having the -s flag set
-!                  in this case means an RPOINTS file will be created.
-!                  (Also you can use another name, ex: -s MYPOINTS).
-!
-! RPOINTS format: The 1st line specifies DIRECT or CARTESIAN
-!                 (defaults to direct, but if the first character is a
-!                 'c' or 'C' then it will assume cartesian format).
-!                 Every following line should be a triplet of floats.
-!
-! (Also, see compiling advice in the README.md file)
+! (Defaults are -f WAVECAR -k 1 -b 1 -K 1-5 -B 1-5)
 !
 !
 !
@@ -51,27 +24,28 @@
 !  Jonathan T Reichanadter
 !  jtreichanadter at berkeley.edu
 !  Neaton Group - LBNL and UC Berkeley
-!  September 15th, 2020
+!  September 16th, 2020
 ! -------------------------------------------------------------------- !
 
 
 ! --- 0 --- workspace
-! file units:   10-WAVECAR   11-RPOINTS   17-outputFile
+! file units:   10-WAVECAR  17-outputFile
 ! recall that 0,5,6 are reserved by Fortran
 implicit real*8 (a-h, o-z)
-complex*8 csum1 , csum2
+complex*8 csum1 , csum2 , overlapValue
 dimension a1(3) , a2(3) , a3(3)
 dimension b1(3) , b2(3) , b3(3)
 dimension a2xa3(3) , sumkg(3) , vtmp(3)
 dimension wk(3) , wkC(3) , xyz(3) , xyzC(3) , wkpg(3) , ig(3)
-integer kpoint , band , totalRealTerms
+integer kpoint ,Kmin , Kmax , band , Bmin , Bmax , totalRealTerms
 character*75 fileName
 character*75 samplingFileName
 character*75 outputFileName
 character*4 nbandString
 dimension wk0(3)
-complex*8, allocatable :: coeff(:)
-integer, allocatable :: igall(:,:)
+complex*8, allocatable :: coeff(:) , coeff0(:)
+complex*8, allocatable :: Rcoeff(:,:) , Rcoeff0(:,:)
+integer, allocatable :: igall(:,:) , igall0(:,:)
 real*8, allocatable :: sampling(:,:)
 logical writeDirect , quietComments , sFlagged
 ! constant   c = 2m/hbar**2  (in 1/eV Ang^2, altered to match VASP)
@@ -84,9 +58,15 @@ pi=4.*atan(1.)
 
 
 
+
+
+
 ! --- 1 --- parse arguments
-call parse( kpoint , band , fileName , samplingFileName , &
-            writeDirect , quietComments , sFlagged )
+call parse(fileName,kpoint,Kmin,Kmax,band,Bmin,Bmax)
+
+
+
+
 
 
 
@@ -95,7 +75,7 @@ call parse( kpoint , band , fileName , samplingFileName , &
 
 ! --- 2 --- run WAVECAR file checks, and acquire header data
 nrecl=24
-open(unit=10,file=filename,access='direct',recl=nrecl, &
+open(unit=10,file=fileName,access='direct',recl=nrecl, &
      iostat=iost,status='old')
 if (iost.ne.0) then
   write(6,*) 'open error - iostat =',iost
@@ -125,7 +105,7 @@ if(nspin.eq.2) then
   stop
 endif
 ! re-open file
-open(unit=10,file=filename,access='direct',recl=nrecl, &
+open(unit=10,file=fileName,access='direct',recl=nrecl, &
      iostat=iost,status='old')
 if (iost.ne.0) write(6,*) 'open error - iostat =',iost
 ! pull vasp variables (kpts,bands,encut,lattice)
@@ -133,6 +113,11 @@ read(unit=10,rec=2) xnwk , xnband , encut , &
 (a1(j),j=1,3) , (a2(j),j=1,3) , (a3(j),j=1,3)
 nwk=nint(xnwk)
 nband=nint(xnband)
+! adjust k,b selection ranges to new data
+if(Kmax.gt.nwk) Kmax = nwk
+if(Bmax.gt.nband) Bmax = nband
+if(Kmin.gt.Kmax) Kmin = 1
+if(Bmin.gt.Bmax) Bmin = 1
 ! more checks...
 if (kpoint.gt.nwk) then
    write(0,*) '*** error - selected k=',kpoint,' > max k=',nwk
@@ -199,7 +184,39 @@ nb3max=max0(nb3maxA,nb3maxB,nb3maxC)
 npmax=2*min0(npmaxA,npmaxB,npmaxC)
 ! allocate dynamic memory
 allocate ( coeff(npmax) )
+allocate ( coeff0(npmax) )
 allocate ( igall(3,npmax) )
+allocate ( igall0(3,npmax) )
+
+
+
+
+
+
+! --- 4 --- set real-space sampling (and handle RPOINTS)
+! sample frequencies
+iXsample = 1*nb1max/2
+iYsample = 1*nb2max/2
+iZsample = 1*nb3max/8
+iSampleCount=(iXsample+1)*(iYsample+1)*(iZsample+1)
+! allocate memory
+allocate ( sampling(iSampleCount,3) )
+allocate ( Rcoeff(iSampleCount,2) )
+allocate ( Rcoeff0(iSampleCount,2) )
+! fill in the sampling array
+i=0
+do iz=0,iZsample
+  do iy=0,iYsample
+    do ix=0,iXsample
+      i=i+1
+      sampling(i,1) = dble(ix) / dble(iXsample+1)
+      sampling(i,2) = dble(iy) / dble(iYsample+1)
+      sampling(i,3) = dble(iz) / dble(iZsample+1)
+    enddo
+  enddo
+enddo
+write(0,*) "i = ",i
+write(0,*) "iSampleCount = ",iSampleCount
 
 
 
@@ -208,7 +225,9 @@ allocate ( igall(3,npmax) )
 
 
 
-! --- 4 --- acquire seed wavefunction
+
+
+! --- 5 --- acquire seed wavefunction
 ! read header data
 irec=3+(kpoint-1)*(nband+1)
 read(unit=10,rec=irec) xnplane , (wk(i),i=1,3)
@@ -219,146 +238,102 @@ call yankPlanes( igall , size(igall) , &
 ! pull coefficents
 irec=irec+band
 read(unit=10,rec=irec) (coeff(iplane), iplane=1,nplane)
-
-
-
-
-! --- 5 --- set real-space sampling (and handle RPOINTS)
-! check RPOINTS
-open(unit=11,file=samplingFileName,access='sequential', &
-     iostat=iost,status='old')
-close(11)
-
-! CASE: read RPOINTS
-if ((sFlagged).and.(iost==0)) then
-  write(0,*) "Reading real-space sampling from ",samplingFileName
-  ! open file
-  open(unit=11,file=samplingFileName,access='sequential', &
-    iostat=iost,status='old')
-  ! read number of lines (to allocate memory)
-  nlines = 0
-  do
-    read(10,*,iostat=iost)
-    if (iost/=0) exit
-    nlines = nlines + 1
-  end do
-  ! allocate memory
-  allocate ( sampling(nlines-1,3) )
-  ! STUB!!! [CHECK cartesian or direct]
-! CASE: error, corrupt file??
-else if ((sFlagged).and.(.not.(iost==6))) then
-  write(6,*) "ERROR --- strange reading error of ",samplingFileName
-  write(0,*) "iostat = ",iost
-  stop
-! CASE: create default unit-cell grid
-else
-  ! sample frequencies
-  iXsample = 2*nb1max
-  iYsample = 2*nb2max
-  iZsample = 2*nb3max
-  iSampleCount=(iXsample+1)*(iYsample+1)*(iZsample+1)
-  ! allocate memory
-  allocate ( sampling(iSampleCount,3) )
-  ! fill in the sampling array
-  i=0
-  do iz=0,iZsample
-  do iy=0,iYsample
-  do ix=0,iXsample
-    i=i+1
-    sampling(i,1) = dble(ix) / dble(iXsample+1)
-    sampling(i,2) = dble(iy) / dble(iYsample+1)
-    sampling(i,3) = dble(iz) / dble(iZsample+1)
-  enddo
-  enddo
-  enddo
-  ! CASE: write to RPOINTS file
-  if ((sFlagged).and.(iost==6)) then
-    write(0,*) "Writing real-space sampling to ",samplingFileName
-    ! STUB!!!
-  endif
-endif
+! CONVERT seed to REALSPACE (can be expensive)
+write(0,*) "Calculating real-space seed wavefunction"
+call convertToRealSpace( Rcoeff , coeff , npmax , iSampleCount , &
+  sampling , xyz , nplane , wk , igall , Vcell )
+! compute norm
+waveNorm = sqrt(   dot_product( Rcoeff(:,1) , Rcoeff(:,1) ) + &
+dot_product( Rcoeff(:,2) , Rcoeff(:,2) )   )
+write(0,*) "waveNorm = ",waveNorm
 
 
 
 
 
-! --- 6 --- compute real-space wavefunction
+
+! --- 6 --- write overlaps
 ! create file name
-outputFileName=fileName
-call makeFileName( outputFileName , &
-                kpoint , nwk , band , nband )
-if (writeDirect) then
-  write(outputFileName,'(A)') ''//trim(outputFileName)//'.dat'
-else
-  write(outputFileName,'(A)') ''//trim(outputFileName)//'_c.dat'
-endif
+outputFileName=""//trim(fileName)//"_overlaps"
+call makeFileName( outputFileName , kpoint , nwk , band , nband )
+write(outputFileName,'(A)') ''//trim(outputFileName)//'.dat'
+open(unit=17,file=outputFileName)
 ! write header
-open( unit=17 , file=outputFileName )
-write(17,'(A)') 'Wavefunction coefficients real space'
+write(17,'(A)') 'Wavefunction overlap matrix elements:   < u_mq | u_nk >'
 write(17,'(A)') ' '
-write(17,'(A)') 'Bloch wave details:'
-write(17,'(A,I4.1,A,I4.1)') '  band:   n = ',band,' of ',nband
-write(17,'(A,I4.1,A,I4.1)') '  k_idx:  k = ',kpoint,' of ',nwk
+write(17,'(A,I4.1,A,I4.1)') 'band:  n = ',band,' of ',nband
+write(17,'(A,I4.1,A,I4.1)') 'k_idx: k = ',kpoint,' of ',nwk
 write(17,'(A,3F14.9)') '  k_vec_direct    =',(wk(j),j=1,3)
 wkC(1)=b1(1)*wk(1)+b2(1)*wk(2)+b3(1)*wk(3)
 wkC(2)=b1(2)*wk(1)+b2(2)*wk(2)+b3(2)*wk(3)
 wkC(3)=b1(3)*wk(1)+b2(3)*wk(2)+b3(3)*wk(3)
 write(17,'(A,3F14.9,A)') '  k_vec_rec(A^-1) =',(wkC(j),j=1,3)
 write(17,'(A)') ' '
-write(17,'(A,I8.1)') 'Total sampling points: ', iSampleCount
-write(17,'(A,I6.1)') '  sampling x: ', iXsample
-write(17,'(A,I6.1)') '  sampling y: ', iYsample
-write(17,'(A,I6.1)') '  sampling z: ', iZsample
+write(17,'(A)') 'B =      (1/Angstrom)'
+write(17,*) 'b1 = ' , (sngl(b1(j)),j=1,3)
+write(17,*) 'b2 = ' , (sngl(b2(j)),j=1,3)
+write(17,*) 'b3 = ' , (sngl(b3(j)),j=1,3)
 write(17,'(A)') ' '
-write(17,'(A)') 'r =  n1 a1  +  n2 a2  +  n3 a3'
-write(17,'(A)') 'A =      (Angstrom)'
-write(17,*) 'a1 = ' , (sngl(a1(j)),j=1,3)
-write(17,*) 'a2 = ' , (sngl(a2(j)),j=1,3)
-write(17,*) 'a3 = ' , (sngl(a3(j)),j=1,3)
+write(17,'(A,I4.1,A,I4.1)') 'Selected m range: ',Bmin,'   - ',Bmax
+write(17,'(A,I4.1,A,I4.1)') 'Selected q range: ',Kmin,'   - ',Kmax
 write(17,'(A)') ' '
+write(17,'(A)') 'The four columns are real (x), imaginary, (y), &
+                absolute value (r), and phase (theta;-pi,pi).'
 write(17,'(A)') ' '
-write(17,'(A)') ' '
-write(17,'(A)') ' '
-if (writeDirect) then
-  write(17,'(A)') '      n1         n2         n3     &
-  |       spin up (complex)         |      spin down (complex)       |'
-else
-  write(17,'(A)') '     x (A)      y (A)      z (A)   &
-  |       spin up (complex)         |      spin down (complex)       |'
-endif
-write(11,'(A)') ' '
-! - DO THE THING
-do i= 1,iSampleCount
-    xyz(1) = sampling(i,1)
-    xyz(2) = sampling(i,2)
-    xyz(3) = sampling(i,3)
-    csum1=cmplx(0.,0.)
-    csum2=cmplx(0.,0.)
-    do iplane=1,nplane/2
-        ig=igall(:,iplane)
-        wkpg = wk + ig
-        csum1=csum1+coeff(iplane)* &
-            cdexp(2.*pi*cmplx(0.,1.)*dot_product(wkpg,xyz))
-        csum2=csum2+coeff(iplane+nplane/2)* &
-            cdexp(2.*pi*cmplx(0.,1.)*dot_product(wkpg,xyz))
-    enddo
-    ! normalize output by volume
-    csum1 = csum1/dsqrt(Vcell)
-    csum2 = csum2/dsqrt(Vcell)
-    ! write output
-    if (writeDirect) then
-      write(17,571) (xyz(j),j=1,3) , csum1 , csum2
-      571 format(3f11.5,'  &
-      | ',g14.6,' ',g14.6,'   | ',g14.6,' ',g14.6,'  |')
-    else
-      xyzC(1)=a1(1)*xyz(1)+a2(1)*xyz(2)+a3(1)*xyz(3)
-      xyzC(2)=a1(2)*xyz(1)+a2(2)*xyz(2)+a3(2)*xyz(3)
-      xyzC(3)=a1(3)*xyz(1)+a2(3)*xyz(2)+a3(3)*xyz(3)
-      write(17,572) (xyzC(j),j=1,3) , csum1 , csum2
-      572 format(3f11.5,'  &
-      | ',g14.6,' ',g14.6,'   | ',g14.6,' ',g14.6,'  |')
-    endif
+! BIG LOOPS BROTHER
+do iq=Kmin,Kmax
+  ! read new header data
+  irec=3+(iq-1)*(nband+1)
+  read(unit=10,rec=irec) xnplane,(wk0(i),i=1,3)
+  nplane0=nint(xnplane)
+  ! pull plane indices
+  call yankPlanes( igall0 , npmax , &
+  c,encut,nplane0,wk0,b1,b2,b3,nb1max,nb2max,nb3max )
+  ! upper ribbon text
+  write(17,*) " "
+  write(17,'(A,I4.1)') "q = ",iq
+  write(17,'(A,3F14.9)') "   vector q = " , ( wk0(j) , j=1,3 )
+  wkC(1)=b1(1)*wk0(1)+b2(1)*wk0(2)+b3(1)*wk0(3)
+  wkC(2)=b1(2)*wk0(1)+b2(2)*wk0(2)+b3(2)*wk0(3)
+  wkC(3)=b1(3)*wk0(1)+b2(3)*wk0(2)+b3(3)*wk0(3)
+  write(17,'(A,3F14.9)') "cartesian q = " , ( wkC(j) , j=1,3 )
+  write(17,'(A,3F14.9)') "   vector q-k = " , ( wk0(j)-wk(j) , j=1,3 )
+  wkC(1)=b1(1)*(wk0(1)-wk(1))+b2(1)*(wk0(2)-wk(2))+b3(1)*(wk0(3)-wk(3))
+  wkC(2)=b1(2)*(wk0(1)-wk(1))+b2(2)*(wk0(2)-wk(2))+b3(2)*(wk0(3)-wk(3))
+  wkC(3)=b1(3)*(wk0(1)-wk(1))+b2(3)*(wk0(2)-wk(2))+b3(3)*(wk0(3)-wk(3))
+  write(17,'(A,3F14.9)') "cartesian q-k = " , ( wkC(j) , j=1,3 )
+  ! LOOP bands
+  do ib=Bmin,Bmax
+    write(0,*) ""//achar(27)//"[0;1;38;5;064mstarting iteration ",&
+              (ib-Bmin) + (Bmax-Bmin+1)*(iq-Kmin) + 1 , ' of ' ,&
+              (Bmax-Bmin+1)*(Kmax-Kmin+1),""//achar(27)//"[0m"
+    ! pull new coefficents
+    irec=3+(iq-1)*(nband+1) + ib
+    read(unit=10,rec=irec) (coeff0(iplane), iplane=1,nplane0)
+    ! HEAVY convert to realspace
+    write(0,*) "--> Calculating another real-space wavefunction"
+    write(0,*) "---> iq =",iq ,"(Kmin =",Kmin , "  Kmax =",Kmax , ")"
+    write(0,*) "---> ib =",ib ,"( Bmin =",Bmin , "  Bmax =",Bmax , ")"
+    call convertToRealSpace( Rcoeff0 , coeff0 , npmax , iSampleCount &
+                  , sampling , xyz , nplane0 , wk0 , igall0 , Vcell )
+    ! compute norm
+    waveNorm0 = sqrt(   dot_product( Rcoeff0(:,1) , Rcoeff0(:,1) ) &
+      + dot_product( Rcoeff0(:,2) , Rcoeff0(:,2) )   )
+    write(0,*)  "---> "//achar(27)//"[0;38;5;022m" ,&
+                "norm0 = ",waveNorm0,""//achar(27)//"[0m"
+    ! take inner product, and write result
+    overlapValue = ( dot_product(   Rcoeff0(:,1) , Rcoeff(:,1) ) &
+      + dot_product( Rcoeff0(:,2) , Rcoeff(:,2) )   ) &
+      / waveNorm / waveNorm0
+    tmpReal=REAL(REAL(overlapValue))
+    tmpImag=REAL(AIMAG(overlapValue))
+    write(17,570) "b = " , ib , overlapValue , &
+                    abs(overlapValue) , atan2(tmpImag,tmpReal)
+    570 format(a,i4.1,'  | ',g14.6,'  ',g14.6 ,' | ',f14.6,' ',f14.6)
+  enddo
 enddo
+
+
 
 
 
@@ -377,11 +352,14 @@ enddo
 ! --- 8 --- exit program
 ! release memory resources
 deallocate(igall)
+deallocate(igall0)
 deallocate(coeff)
+deallocate(coeff0)
+deallocate(Rcoeff)
+deallocate(Rcoeff0)
 deallocate(sampling)
 ! close files
 close(10)
-close(11)
 close(17)
 ! exit
 stop
@@ -451,6 +429,7 @@ end subroutine vcross
 ! Identify wavefunction plane-wave indices
 subroutine yankPlanes(igall,nigall,c,encut,nplane,wk, &
 b1,b2,b3,nb1max,nb2max,nb3max)
+! workspace
 implicit real*8(a-h,o-z)
 dimension wk(3),b1(3),b2(3),b3(3),sumkg(3)
 dimension igall(3,nigall)
@@ -489,31 +468,78 @@ end subroutine yankPlanes
 
 
 
+! CONVERT to REALSPACE (can be expensive)
+subroutine convertToRealSpace( Rcoeff , coeff , npmax , iSampleCount,&
+sampling , xyz , nplane , wk , igall , Vcell )
+! workspace
+implicit real*8(a-h,o-z)
+integer iSampleCount , nplane , npmax
+complex*8, dimension(iSampleCount,2) :: Rcoeff
+complex*8, dimension(npmax) :: coeff
+integer, dimension(3,npmax) :: igall
+integer, dimension(3) :: ig
+real*8, dimension(iSampleCount,3) :: sampling
+real*8, dimension(3) :: wk , xyz , wkpg
+real*8 Vcell
+complex*8 csum1 , csum2
+! begin (potentially) massive loop
+do i= 1,iSampleCount
+    xyz(1) = sampling(i,1)
+    xyz(2) = sampling(i,2)
+    xyz(3) = sampling(i,3)
+    csum1=cmplx(0.,0.)
+    csum2=cmplx(0.,0.)
+    do iplane=1,nplane/2
+        ig=igall(:,iplane)
+        wkpg = wk + ig
+        csum1=csum1+coeff(iplane) * &
+            cdexp(2.*pi*cmplx(0.,1.) * dot_product(wkpg,xyz))
+        csum2=csum2+coeff(iplane+nplane/2) * &
+            cdexp(2.*pi*cmplx(0.,1.) * dot_product(wkpg,xyz))
+    enddo
+    ! normalize output by volume
+    csum1 = csum1/dsqrt(Vcell)
+    csum2 = csum2/dsqrt(Vcell)
+    ! write output
+    Rcoeff(i,1) = csum1
+    Rcoeff(i,2) = csum2
+enddo
+return
+end subroutine convertToRealSpace
+
+
+
+
+
+
+
+
+
+
 
 
 
 ! parse command-line arguments
-subroutine parse( kpoint , band , filename , samplingFileName , &
-                  writeDirect , quietComments , sFlagged )
+subroutine parse(filename,kpoint,Kmin,Kmax,band,Bmin,Bmax)
 ! workspace
-integer kpoint , band
+integer kpoint,Kmin,Kmax,band,Bmin,Bmax
 character*75 fileName , samplingFileName
 logical writeDirect , quietComments , sFlagged
-character*2, dimension(6) :: userFlags
+character*2, dimension(5) :: userFlags
 character*20 option , value , val
 integer iarg , narg , ia
 ! variable prep
 iarg = iargc()
 ia = 1
-userFlags = (/"-b","-k","-f","-s","-c","-q"/)
+userFlags = (/"-b","-k","-f","-B","-K"/)
 ! user parameters
-kpoint = 1
-band = 1
 filename = "WAVECAR"
-samplingFileName = "RPOINTS"
-writeDirect = .TRUE.
-quietComments = .FALSE.
-sFlagged = .FALSE.
+kpoint = 1
+Kmin = 1
+Kmax = 5
+band = 1
+Bmin = 1
+Bmax = 5
 ! LOOP through arguments
 do while ( ia < iarg )
   call getarg(ia,option)
@@ -530,15 +556,30 @@ do while ( ia < iarg )
   else if(option=="-f") then
     if (.not.(value==" ")) read(value,*) fileName
   ! samplingFileName
-  else if(option=="-s") then
-    sFlagged = .TRUE.
-    if (.not.(value==" ")) read(value,*) samplingFileName
-  ! writeDirect
-  else if(option=="-c") then
-    writeDirect = .FALSE.
-  ! quietComments
-  else if(option=="-q") then
-    quietComments = .TRUE.
+  else if(option == "-K") then
+    val = "0" // trim(adjustl(value)) // "0"
+    if(index(val,"-").lt.2 .or. &
+      index(val,"-").gt.len(val)) then
+      call help
+    else
+      read(val(1:index(val,"-")-1),*) Kmin
+      if(Kmin.eq.0) Kmin = 1
+      read(val(index(val,"-")+1:len(val)),*) Kmax
+      Kmax = Kmax/10
+      if(Kmax.eq.0) Kmax = 10000
+    endif
+  else if(option == "-B") then
+    val = "0" // trim(adjustl(value)) // "0"
+    if(index(val,"-").lt.2 .or. &
+      index(val,"-").gt.len(val)) then
+      call help
+    else
+      read(val(1:index(val,"-")-1),*) Bmin
+      if(Bmin.eq.0) Bmin = 1
+      read(val(index(val,"-")+1:len(val)),*) Bmax
+      Bmax = Bmax/10
+      if(Bmax.eq.0) Bmax = 10000
+    endif
   ! Unrecognized Flag!
   else
       call help
@@ -546,11 +587,6 @@ do while ( ia < iarg )
   ! increment counter
   ia=ia+1
 enddo
-! handle case if the final argument is missed
-call getarg(iarg,option)
-if (option=="-s") sFlagged=.TRUE.
-if (option=="-c") writeDirect=.FALSE.
-if (option=="-q") quietComments=.TRUE.
 ! done...
 return
 end subroutine parse
