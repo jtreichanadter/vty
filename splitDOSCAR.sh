@@ -154,27 +154,27 @@ fi
 
 LEN=$( head -n 6 ../DOSCAR | tail -n 1 | cut -d "." -f 3- | cut -d " " -f 2 )
 
-if test -f "../POSCAR"; then
-	printf "this part could take a little while"
-	# loop over species
-	for (( i=0; i<${#SPECIES[@]}; i++ )); do
-		# loop over pdos file lines
-		j=0
-		while [ $j -lt $LEN ]; do
-			let j++
-			# loop over number of this species
-    		for (( k=0; k<${NUMBERS[$i]}; k++ )); do
-    			
-    		done
-		done
-	done
-fi
+#if test -f "../POSCAR"; then
+#	printf "this part could take a little while"
+#	# loop over species
+#	for (( i=0; i<${#SPECIES[@]}; i++ )); do
+#		# loop over pdos file lines
+#		j=0
+#		while [ $j -lt $LEN ]; do
+#			let j++
+#			# loop over number of this species
+ #   		for (( k=0; k<${NUMBERS[$i]}; k++ )); do
+  #  			
+   # 		done
+#		done
+#	done
+#fi
 
 
 
 
 
-# reset DEBUG trap
+# restore DEBUG trap
 function setWhite { printf "\033[0m" }
 trap setWhite DEBUG
 
